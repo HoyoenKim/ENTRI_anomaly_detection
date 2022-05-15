@@ -66,14 +66,15 @@ def statisticalAnalysis(saveHistogram, saveFig, saveStd):
                 if saveStd:
                     data_avg = np.mean(y)
                     data_std =  np.std(y)
-                    nlist = []
-                    for (i, d) in enumerate(data[data_domain]):
-                        if not math.isnan(d):
-                            temp = round((d - data_avg)/data_std, 3)
-                            nlist.append(temp)
-                        else:
-                            nlist.append(d)
-                    std_obj[data_domain] = nlist
+                    if data_std != 0:
+                        nlist = []
+                        for (i, d) in enumerate(data[data_domain]):
+                            if not math.isnan(d):
+                                temp = round((d - data_avg)/data_std, 3)
+                                nlist.append(temp)
+                            else:
+                                nlist.append(d)
+                        std_obj[data_domain] = nlist
         
     if saveHistogram:
         for domain_key in total_data.keys():
@@ -92,9 +93,26 @@ def statisticalAnalysis(saveHistogram, saveFig, saveStd):
                 plt.clf()
     
     if saveStd:
+        avg = []
+        for i in range(0, len(data_list[0]['Timestamp'])):
+            std_sum = 0
+            std_count = 0
+            for data in data_list:
+                for data_domain in data.keys():
+                    if data_domain != 'Timestamp':
+                        d = data[data_domain][i]
+                        if not math.isnan(d):
+                            std_sum += d
+                            std_count += 1
+
+            if std_count != 0:
+                std_avg = round(std_sum / std_count, 4)
+                avg.append(std_avg)
+            else:
+                avg.append(0)
+        std_obj['avg'] = avg
         std_obj = pd.DataFrame(std_obj)
-        print(std_obj)
-        std_obj.to_csv('./ALL_STD.csv')
+        std_obj.to_csv('./all_standard.csv')
 
 def getStreamScore(saveFig):
     import rrcf
@@ -174,15 +192,18 @@ def RuleBasedPrediction():
     data_legnth = len(data_list[0]['Timestamp'])
     prediction = []
 
-    existScore = True
-    score = []
-    score_save = []
-    score_count = 0
+    exist_rrfc_score = True
+    rrfc_score = []
+    rrfc_score_count = 0
     try:
-        score = pd.read_csv('./score_40_48_STREAM_Session_3.csv')['score']
+        rrfc_score = pd.read_csv('./score_40_48_STREAM_Session_3.csv')['score']
     except:
-        existScore = False
+        exist_rrfc_score = False
 
+    # Detect feature except stream data above the threshold.
+    # Detect stream data above the rrfc score threshold.
+    # The threshold is determined by the Histogram.
+    # Histogram will be replaced by KDE (Kernel Density Estimate).
     for i in tqdm(range(0, data_legnth)):
         isAttack = 0
         for j in range(1, 2):
@@ -214,140 +235,167 @@ def RuleBasedPrediction():
             if not math.isnan(f) and f >= 200:
                 isAttack = 1
         
-        if existScore:
+        if exist_rrfc_score:
             s1 = data_list[3]['STREAM-01-Session'][i]
             s2 = data_list[3]['STREAM-02-Session'][i]
             s3 = data_list[3]['STREAM-03-Session'][i]
             if i >= idx_half + 1:
                 if not math.isnan(s3):
-                    if score_count < len(score):
-                        if score[score_count] >= 65:
+                    if rrfc_score_count < len(rrfc_score):
+                        if rrfc_score[rrfc_score_count] >= 65:
                             isAttack = 2
-                        score_save.append(score[score_count])
-                    else:
-                        score_save.append(-1)
-                    score_count += 1
-                else:
-                    score_save.append(-1)
+                    rrfc_score_count += 1
 
         if i >= idx_half + 1:
             prediction.append(isAttack)
 
-    handwork = pd.read_csv('./all_std.csv')
-    avg = list(handwork['avg'][idx_half + 1:])
-
-    ret = pd.read_csv('./backup/Media_answer_bb_65.csv')['Prediction']
+    all_std = pd.read_csv('./all_std.csv')
+    std_avg_list = list(all_std['avg'][idx_half + 1:])
     
-    # 2. rrcf 는 맨 뒤 48개 메시지를 분석하지 못하므로 새로운 rule 로 탐지
-    # std > 4 이상
+    # RRCF cannot determine the last 48 packets, then use std > 4 to detect.
     for i in range(len(prediction) - 48, len(prediction)):
-        if int(avg[i]) >= 4:
+        if int(std_avg_list[i]) >= 4:
             prediction[i] = 1
         else:
             prediction[i] = 0
 
-    # 1. Attack Group 화
-
+    # Grouping detected data.
+    # For generate each group, consider the successive bottom 5 data.
+    # When the attacker takes over network (DoS or DDosS) or spoofing packet, the outliers' distribution are grouped.
     attack_group = []
-    isStart = 0
-    zeroCount = 0
+    is_start_attack = 0
+    non_attack_Count = 0
     for i in range(0, len(prediction)):
-        if prediction[i] == 1 and isStart == 0:
-            isStart = 1
+        if prediction[i] == 1 and is_start_attack == 0:
+            is_start_attack = 1
             attack_group.append([i])
         
-        if isStart == 1:
+        if is_start_attack == 1:
             if prediction[i] == 0:
-                zeroCount += 1
+                non_attack_Count += 1
             else:
-                zeroCount = 0
+                non_attack_Count = 0
 
-        
-        if zeroCount == 5:
-            isStart = 0
-            zeroCount = 0
+        if non_attack_Count == 5:
+            is_start_attack = 0
+            non_attack_Count = 0
             attack_group[-1].append(i - 5)
     
-    attack_group_filter = []
-
-    for aa in attack_group:
-        if aa[-1] - aa[0] > 1:
-            attack_group_filter.append(aa)
+    # Seperate gropu with group size.
+    attack_group_multi = []
+    attack_group_single = []
+    for ag in attack_group:
+        before = ag[0]
+        after = ag[-1]
+        if after - before > 1:
+            attack_group_multi.append(ag)
+        elif len(ag) > 1:
+            attack_group_single.append(ag)
     
-    print(attack_group_filter)
-
-    for aa in attack_group_filter:
-        maxScore = 0
-        for i in range(aa[0], aa[-1] + 1):
-            #prediction[i] = 1
-            maxScore = max(maxScore, avg[i])
-        
-        if round(maxScore) <= 3:
-            for i in range(aa[0], aa[-1] + 1):
-                print(i, end=' ')
-                print(ret[i], end=' ')
-                s = 0
-                smin = 10
-                for key in handwork:
-                    if key != 'Timestamp' and not math.isnan(handwork[key][i + idx_half + 1]):
-                        if not 'STREAM' in key and not 'avg' in key:
-                            s = max(s, handwork[key][i + idx_half + 1])
-                            smin = min(smin, handwork[key][i + idx_half + 1])
-                    print(handwork[key][i + idx_half + 1], end=' ')
-                print()
-                
-                s = 0
-                for key in handwork:
-                    if key != 'Timestamp' and not math.isnan(handwork[key][i + idx_half + 1]):
-                        s = max(s, handwork[key][i + idx_half + 1])
+    # For multi group
+    for ag in attack_group_multi:
+        before = ag[0]
+        after = ag[-1]
+        max_avg = 0
+        attack_count = 0
+        # Get maximum std avg.
+        # Get attack count.
+        for i in range(before, after + 1):
+            max_avg = max(max_avg, std_avg_list[i])
+            if prediction[i] == 1:
+                    attack_count += 1
+        for i in range(before, after + 1):
+            rmax = 0
+            rmin = 10
+            for key in all_std:
+                r = all_std[key][i + idx_half + 1]
+                if 'Request' in key and not math.isnan(r):
+                    rmax = max(rmax, r)
+                    rmin = min(rmin, r)
+                    
+            if round(max_avg) <= 3:
+                # if maximum std avg < 3 then false grouping.
+                # Not to be attack.
                 prediction[i] = 0
-
-                if maxScore >= 3:
-                    if avg[i] >= 2.9:
-                        print(smin)
+                
+                # Rebound sigle detect.
+                if std_avg_list[i] >= 3:
+                    prediction[i] = 1
+                    for j in range(i - 2, i + 3):
+                        # Check for peripheral data.
+                        if std_avg_list[j] >= 2.7:
+                            prediction[j] = 1
+                elif std_avg_list[i] <= 2.7 and std_avg_list[i] >= 2.0:
+                    # Check for distinct rule.
+                    if rmax > 8.4 and rmin > 2:
                         prediction[i] = 1
-                    
-                    if s >= 10:
+                else:
+                    # Check for distinct rule.
+                    if rmax > 10:
                         prediction[i] = 1
-                elif maxScore >= 2.5:
-                    if avg[i] >= 2.5 and s >= 8:
-                        prediction[i] = 1
-        else:
-            c = 0
-            for i in range(aa[0], aa[-1] + 1):
-                if prediction[i] == 1:
-                    c += 1
-                    
-            # true grouping
-            if c >= (aa[-1] - aa[0] + 1) // 2:
-                for i in range(aa[0], aa[-1] + 1):
+            else:                    
+                # True grouping.
+                # To be attack.
+                if attack_count >= (after - before + 1) // 2:
                     prediction[i] = 1
 
-    print(collections.Counter(prediction))
-    
-    diff = []
-    
-    for i in range(0, len(ret)):
-        if ret[i] == prediction[i] or prediction[i] == 2:
-            diff.append(0)
-        else:
-            diff.append(1)
+    # For signal group
+    # Check whether exist an attack in the boundary.
+    for ag in attack_group_single:
+        if ag[0] == 0 or ag[0] != ag[-1]:
+            continue
+            
+        now = ag[0]
+        before = ag[0] - 1
+        after = ag[0] + 1
+        diff1 = std_avg_list[before] - std_avg_list[now]
+        diff2 = std_avg_list[after] - std_avg_list[now]
 
-    print(collections.Counter(diff))
-    print(len(handwork['avg'][idx_half + 1:]), len(score_save), len(prediction), len(ret), len(diff))
-    
-    answer = {
-        'Prediction': prediction,
-        'Score': score_save,
-        'Ret': ret,
-        'Diff': diff,
-        'Avg': avg
-    }
-    #prediction = pd.DataFrame(prediction, columns=['Prediction'])
-    #print(f'예측 결과. \n{prediction}\n')
-    #prediction.to_csv('./Media_Rule_Based_Result.csv', index=False)
-    answer = pd.DataFrame(answer)
-    answer.to_csv('./ntc.csv')
+        for i in range(before, after + 1):
+            smax = 0
+            smin = 10
+            rmax = 0
+            rmin = 10
+            for key in all_std:
+                if 'Timestamp' in key or 'avg' in key:
+                    continue
+                
+                x = all_std[key][i + idx_half + 1]
+                if math.isnan(x):
+                    continue
+                
+                if 'STREAM' in key:
+                    smax = max(smax, x)
+                    smin = min(smin, x)
+                else:
+                    rmax = max(rmax, x)
+                    rmin = min(rmin, x)
+
+            if std_avg_list[now] > 3.5:
+                # For high maximal.               
+                if diff1 < 0 and diff2 < 0:
+                    # For extreme maximal.
+                    if std_avg_list[i] >= 3 and smax >= 6:
+                       prediction[i] = 1
+            else:
+                # For low maximal      
+                if diff1 < 0 and diff2 < 0:
+                    # For extreme maximal.
+                    if rmax >= 10:
+                        # Check for distinct rule.
+                        prediction[i] = 1
+                elif diff1 < 0 and diff2 > 0:
+                    # Take extreme maximal.
+                    prediction[i] = 1
+
+    for (i, p) in enumerate(prediction):
+        if p == 2:
+            prediction[i] = 1
+
+    print(collections.Counter(prediction))
+    prediction = pd.DataFrame(prediction, columns=['Prediction'])
+    print(f'예측 결과. \n{prediction}\n')
+    prediction.to_csv('./Media_Rule_Based_Result.csv', index=False)
 
 if __name__ == '__main__':
     # Load Data
@@ -356,15 +404,15 @@ if __name__ == '__main__':
     # Data analysis (Calculate Statistic)
     try:
         # Need ALL_STD.csv
-        std_obj = pd.read_csv('./ALL_STD.csv')
+        std_obj = pd.read_csv('./all_standard.csv')
     except:
         # Generate ALL_STD.csv
         statisticalAnalysis(True, True, True)
-        None
     try:
         # need RRCF score
         # The rrcf score changes slightly each time it is executed.
-        rrfc_score = pd.read_csv('./score_40_48_STREAM-03-Session_1.csv')
+        # TODO If you generate new rrfc_score, then re-calculate threshold!!!
+        rrfc_score = pd.read_csv('./score_40_48_STREAM_Session_3.csv')
     except:
         # Generate RRCF score
         # Calcuating RRCF score takes about 20 ~ 30 minutes depending on CPU.

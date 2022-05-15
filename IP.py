@@ -20,7 +20,7 @@ def readData():
     data = pd.read_csv(data_path)    
     idx_half = data.index[data['Timestamp'] == '20210630_2350-0000'].tolist()[0]
 
-def statisticalAnalysis(saveHistogram, saveFig, saveSepData), :
+def statisticalAnalysis(saveHistogram, saveFig, saveSepData):
     global data
     global figure_ip_path
 
@@ -85,6 +85,7 @@ def RuleBasedPrediction():
     sep_ssr = sep_data['Ss_request']
     
     # Grouping detected data.
+    # For generate each group, consider the successive bottom 2 data.
     # When the attacker takes over network (DoS or DDosS) or spoofing packet, the outliers' distribution are grouped.
     attack_group = []
     is_start_attack = 0
@@ -132,38 +133,47 @@ def RuleBasedPrediction():
         # Thresholds of the boundary change according to the attack pattern.
         # Rules are usually set based on specifications, but it is also possible through reverse engineering (inferences based on data).
         if max_sse >= 160:
+            # Check for distinct rule.
             for i in range(before, after + 1):
                 if sep_sse[i] > 20:
                     prediction[i] = 1
         elif max_sse >= 120:
+            # Check for distinct rule.
             for i in range(before, after + 1):
                 if sep_sse[i] > 50:
                     prediction[i] = 1
         elif max_sse >= 110:
+            # Check for distinct rule.
             for i in range(before, after + 1):
                 if sep_sse[i] > 45:
                     prediction[i] = 1
         elif max_sse >= 105:
+            # Check for distinct rule.
             for i in range(before, after + 1):
                 if sep_sse[i] > 45:
                     prediction[i] = 1
         elif max_sse >= 100:
+            # Check for distinct rule.
             for i in range(before, after + 1):
                 if sep_sse[i] > 55 and sep_ssr[i] != 0 and sep_sse[i] / sep_ssr[i] > 12:
                     prediction[i] = 1
         elif max_sse >= 95:
+            # Check for distinct rule.
             for i in range(before, after + 1):
                 if sep_sse[i] >= 45:
                     prediction[i] = 1
         elif max_sse >= 90:
+            # Check for distinct rule.
             for i in range(before, after + 1):
                 if sep_sse[i] < 89:
                     prediction[i] = 0
         elif max_sse >= 87:
+            # Check for distinct rule.
             for i in range(before, after + 1):
                 if sep_sse[i] > 40:
                     prediction[i] = 1
         elif max_sse >= 85:
+            # Check for distinct rule.
             for i in range(before, after + 1):
                 if sep_sse[i] > 50:
                     prediction[i] = 1
